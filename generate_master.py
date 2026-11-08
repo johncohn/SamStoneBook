@@ -96,8 +96,28 @@ def make_all_map_b64(conn):
     return make_year_map_b64(lats, lons)
 
 
+_COUNTRY_NORM = {
+    # Encoding corruption
+    "Mã©Xico":    "Mexico",
+    # Single entry with embedded newline + log fragment — both halves of "Netherlands"
+    "Nethe\n\n[6] [11:45:27 Am] [Log]Rlands": "Netherlands",
+    # Long-form → short-form (US / UK duplicates)
+    "United Kingdom of Great Britain and Northern Ireland": "United Kingdom",
+    "United States of America": "United States",
+    # City used as country
+    "Porto":      "Portugal",
+    # Punctuation / casing
+    "Scotland. Uk": "Scotland",
+    # Cryptic abbreviation
+    "R.O.C.":     "Taiwan",
+}
+
+
+def _norm_country(name: str) -> str:
+    return _COUNTRY_NORM.get(name, name)
+
+
 def intro_page(conn, map_b64):
-    total  = conn.execute("SELECT COUNT(*) FROM samstones").fetchone()[0]
     placed = conn.execute(
         "SELECT COUNT(*) FROM samstones WHERE category LIKE '%Placed%'"
     ).fetchone()[0]
@@ -105,23 +125,25 @@ def intro_page(conn, map_b64):
         "SELECT COUNT(*) FROM samstones WHERE category LIKE '%Found%'"
     ).fetchone()[0]
 
-    stones_sent = countries_n = 0
+    stones_sent = 0
     country_list = []
     try:
         r = conn.execute(
-            "SELECT SUM(COALESCE(stones,0)), COUNT(DISTINCT country) "
-            "FROM requests WHERE is_spam=0 AND country!=''"
+            "SELECT SUM(COALESCE(stones,0)) FROM requests WHERE is_spam=0"
         ).fetchone()
         if r:
             stones_sent = r[0] or 0
-            countries_n = r[1] or 0
-        country_list = sorted(
+        raw_countries = [
             row[0] for row in conn.execute(
                 "SELECT DISTINCT country FROM requests WHERE is_spam=0 AND country!=''"
             ) if row[0]
-        )
+        ]
+        # Normalise names, deduplicate, sort
+        country_list = sorted(set(_norm_country(c) for c in raw_countries))
     except Exception:
         pass
+
+    countries_n = len(country_list)
 
     def stat(num, label):
         return (f'<div class="intro-stat">'
@@ -130,8 +152,8 @@ def intro_page(conn, map_b64):
                 f'</div>')
 
     stats = (stat(stones_sent, "SamStones Sent") +
-             stat(placed,      "SamStones Reported") +
-             stat(found,       "Found") +
+             stat(placed,      "Placement Reports") +
+             stat(found,       "Finding Reports") +
              stat(countries_n, "Countries"))
 
     countries_html = ""
