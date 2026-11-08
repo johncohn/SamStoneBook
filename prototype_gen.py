@@ -14,7 +14,7 @@ Key design decisions:
   - TILE_GAP is a single constant — change it to adjust all spacing at once
 """
 
-import sqlite3, json, base64, io, os, re, ssl, math, urllib.request
+import sqlite3, json, base64, io, os, re, ssl, math, urllib.request, subprocess, hashlib
 from html import escape
 from datetime import datetime
 from PIL import Image as _PILImage
@@ -569,8 +569,24 @@ def render_tile(tile) -> str:
 
 # ── COLUMN LAYOUT ─────────────────────────────────────────────────────────────
 
+_COL_W_2 = (PAGE_W - 2*PAGE_MARGIN - TILE_GAP) / 2        # 2-col tile width (in)
+_COL_W_3 = (PAGE_W - 2*PAGE_MARGIN - 2*TILE_GAP) / 3     # 3-col tile width (in)
+_PX_PER_IN = 96.0                                          # CSS pixels per inch
+
+
 def natural_tile_height(tile: dict, col_w: float) -> float:
-    """Estimate content-driven height for a tile at the given column width."""
+    """Return tile height at col_w in inches.
+
+    Uses browser-measured heights (tile['h2col'] / tile['h3col']) when available;
+    falls back to the text-line estimation only before the measurement pass runs.
+    """
+    if "h2col" in tile:
+        # Pick the pre-measured height for whichever standard column width is closer
+        if abs(col_w - _COL_W_2) <= abs(col_w - _COL_W_3):
+            return tile["h2col"]
+        return tile["h3col"]
+
+    # Estimation fallback (used only before measurement pass)
     photo = tile["photo"]
     wc    = min(tile["wc"], MAX_WORDS)
     wpl   = max(3, col_w / WPL_COL)
@@ -578,10 +594,111 @@ def natural_tile_height(tile: dict, col_w: float) -> float:
     text_h = text_lines * TILE_LINE_H + TILE_HEADER_H + TILE_PAD_H
     if not photo:
         return min(MAX_TILE_NAT_H, max(text_h, MIN_DIM))
-    # Use real image aspect ratio: width/height → photo_h = col_w / ar
     ar = tile.get("aspect_ratio", 1.0)
     photo_h = max(col_w / ar, MIN_DIM)
     return min(MAX_TILE_NAT_H, photo_h + text_h)
+
+
+def measure_tile_heights(tiles: list) -> None:
+    """Measure actual rendered heights via headless Playwright.
+
+    Renders every tile at both standard column widths in a hidden Chromium page,
+    reads each div's getBoundingClientRect().height, and stores the results on
+    the tile dicts as tile['h2col'] and tile['h3col'] (in inches).
+
+    Results are cached in .tile_heights_cache.json keyed by a hash of the
+    rendered HTML so unchanged tiles are not remeasured on subsequent runs.
+    """
+    _HERE_LOCAL = os.path.dirname(os.path.abspath(__file__))
+    CACHE_PATH  = os.path.join(_HERE_LOCAL, ".tile_heights_cache.json")
+    PW_DIR_MH   = "/private/tmp/pw_pdf"
+    MH_SCRIPT   = os.path.join(PW_DIR_MH, "measure_tiles.mjs")
+    HTML_TMP    = "/tmp/samstones_measure.html"
+    JSON_TMP    = "/tmp/samstones_heights.json"
+
+    def _tile_hash(tile: dict) -> str:
+        return hashlib.md5(render_tile(tile).encode()).hexdigest()[:16]
+
+    # Load cache
+    cache: dict = {}
+    if os.path.exists(CACHE_PATH):
+        try:
+            with open(CACHE_PATH) as f:
+                cache = json.load(f)
+        except Exception:
+            pass
+
+    hashes    = [_tile_hash(t) for t in tiles]
+    uncached  = [(i, tiles[i], hashes[i]) for i in range(len(tiles))
+                 if hashes[i] not in cache]
+
+    if uncached:
+        print(f"  Measuring {len(uncached)} tile heights via Playwright…", flush=True)
+
+        # Build a flat HTML page: each tile rendered twice (at 2-col and 3-col width)
+        items = []
+        for local_i, (_, tile, _) in enumerate(uncached):
+            html = render_tile(tile)
+            items.append(
+                f'<div data-id2="{local_i}" '
+                f'style="width:{_COL_W_2}in;display:block;overflow:hidden;">'
+                f'{html}</div>'
+            )
+            items.append(
+                f'<div data-id3="{local_i}" '
+                f'style="width:{_COL_W_3}in;display:block;overflow:hidden;">'
+                f'{html}</div>'
+            )
+
+        full_html = (
+            f'<!DOCTYPE html><html><head><meta charset="UTF-8">'
+            f'<style>{CSS}</style></head>'
+            f'<body style="margin:0;padding:0;background:white;">'
+            f'{"".join(items)}'
+            f'</body></html>'
+        )
+        with open(HTML_TMP, "w") as f:
+            f.write(full_html)
+
+        base_url = f"file://{_HERE_LOCAL}/"
+        result = subprocess.run(
+            ["node", MH_SCRIPT,
+             "--html", HTML_TMP,
+             "--base", base_url,
+             "--out",  JSON_TMP],
+            cwd=PW_DIR_MH, timeout=180,
+            capture_output=True, text=True,
+        )
+
+        if result.returncode != 0:
+            print(f"  Warning: height measurement failed — using estimates.\n"
+                  f"  {result.stderr[:300]}", flush=True)
+            for tile in tiles:
+                tile.setdefault("h2col", natural_tile_height(tile, _COL_W_2))
+                tile.setdefault("h3col", natural_tile_height(tile, _COL_W_3))
+            return
+
+        raw: dict = {}
+        try:
+            with open(JSON_TMP) as f:
+                raw = json.load(f)
+        except Exception as e:
+            print(f"  Warning: could not read heights JSON: {e}", flush=True)
+
+        for local_i, (_, tile, h) in enumerate(uncached):
+            h2px = raw.get(f"{local_i}_2", natural_tile_height(tile, _COL_W_2) * _PX_PER_IN)
+            h3px = raw.get(f"{local_i}_3", natural_tile_height(tile, _COL_W_3) * _PX_PER_IN)
+            cache[h] = [h2px / _PX_PER_IN, h3px / _PX_PER_IN]
+
+        with open(CACHE_PATH, "w") as f:
+            json.dump(cache, f)
+        print(f"    done ({result.stdout.strip()})", flush=True)
+
+    # Apply cached heights to all tiles
+    for tile, h in zip(tiles, hashes):
+        cached = cache[h]
+        tile["h2col"] = cached[0]
+        tile["h3col"] = cached[1]
 
 
 def assign_to_cols(tiles: list, n_cols: int, col_w: float) -> list:
@@ -785,6 +902,8 @@ def main():
         else:                weight_dist["tiny"]   += 1
     print(f"  Photos: {photo_count}/{len(tiles)}  "
           f"Weights: {weight_dist}")
+
+    measure_tile_heights(tiles)
 
     lats = [r["latitude"]  for r in records if r["latitude"]  is not None]
     lons = [r["longitude"] for r in records if r["longitude"] is not None]

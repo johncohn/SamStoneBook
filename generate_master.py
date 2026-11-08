@@ -17,7 +17,7 @@ os.environ.setdefault("SAMSTONES_YEAR", "2007")
 
 from prototype_gen import (
     DB_PATH, ensure_geojson, make_year_map_b64,
-    build_tiles, group_into_pages, refill_pages,
+    build_tiles, group_into_pages, refill_pages, measure_tile_heights,
     render_content_page, assign_to_cols, render_tile,
     CSS,
     PAGE_W, PAGE_MARGIN, TILE_GAP,
@@ -217,13 +217,22 @@ def main():
         y = int(r["date_parsed"][:4])
         year_groups.setdefault(y, []).append(r)
 
+    # Build all tiles across all years, then measure in a single Playwright pass
+    tiles_by_year: dict[int, list] = {}
+    for year in sorted(year_groups.keys()):
+        tiles_by_year[year] = build_tiles(year_groups[year])
+
+    all_tiles = [t for tiles in tiles_by_year.values() for t in tiles]
+    print(f"Measuring {len(all_tiles)} tile heights via Playwright (one pass)…")
+    measure_tile_heights(all_tiles)
+
     all_pages_html = []
     total_content_pages = 0
 
     for year in sorted(year_groups.keys()):
         records = year_groups[year]
+        tiles   = tiles_by_year[year]
         print(f"  {year}: {len(records)} records…", end=" ", flush=True)
-        tiles  = build_tiles(records)
         pages  = refill_pages(group_into_pages(tiles))
         print(f"{len(pages)} pages")
         total_content_pages += len(pages)
