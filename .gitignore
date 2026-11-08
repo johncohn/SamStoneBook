@@ -1,0 +1,16 @@
+# Generated output — large files, not committed
+samstones.db
+cached_images/
+prototype_*.html
+*.pdf
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# macOS
+.DS_Store
+
+# Claude internal
+.claude/
