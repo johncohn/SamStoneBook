@@ -17,6 +17,7 @@ Key design decisions:
 import sqlite3, json, base64, io, os, re, ssl, math, urllib.request
 from html import escape
 from datetime import datetime
+from PIL import Image as _PILImage
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
@@ -38,7 +39,7 @@ PAGE_MARGIN     = 0.10  # outer gap from page edge to first tile
 TILE_GAP        = 0.07  # gap between adjacent tiles — change this to retune all spacing
 MIN_DIM         = 1.5   # minimum tile width or height
 MAX_WORDS       = 150   # text cap; "read more →" link beyond this
-MAX_TILES_PAGE  = 14    # safety cap — raised for flexbox (tiles now at true content height)
+MAX_TILES_PAGE  = 40    # safety cap; height simulation is the real gating factor
 
 # Text height estimation — used to pick portrait vs landscape and size the photo area
 TILE_LINE_H        = 0.150  # one line of 8pt text in inches
@@ -165,6 +166,16 @@ def tile_weight(has_photo: bool, wc: int) -> float:
     return W_CHIP if wc >= 15 else W_TINY
 
 
+def _image_aspect_ratio(path: str) -> float:
+    """Return width/height for a cached image file; 1.0 on any error."""
+    try:
+        with _PILImage.open(path) as img:
+            w, h = img.size
+            return w / h if h > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
 def build_tiles(records: list) -> list:
     """Pre-resolve photos, pick best, compute weight. Returns list of tile dicts."""
     tiles = []
@@ -173,37 +184,49 @@ def build_tiles(records: list) -> list:
         wc    = len(msg.split())
         photo = pick_best_photo(r)
         w     = tile_weight(has_photo=bool(photo), wc=wc)
-        tiles.append({"record": r, "photo": photo, "wc": wc, "weight": w})
+        ar    = _image_aspect_ratio(photo) if photo else 1.0
+        tiles.append({"record": r, "photo": photo, "wc": wc,
+                      "weight": w, "aspect_ratio": ar})
     return tiles
 
 
 # ── PAGE GROUPING ─────────────────────────────────────────────────────────────
 
-def group_into_pages(tiles: list) -> list[list]:
-    """Group tiles into pages by accumulated weight, respecting MAX_TILES_PAGE."""
-    pages, current, acc = [], [], 0.0
+def _page_max_col_h(tiles: list) -> float:
+    """Simulate greedy column assignment; return the tallest column's height."""
+    if not tiles:
+        return 0.0
+    n_cols = 3 if len(tiles) >= 6 else 2
+    col_w  = (PAGE_W - 2*PAGE_MARGIN - (n_cols-1)*TILE_GAP) / n_cols
+    col_h  = [0.0] * n_cols
     for tile in tiles:
-        w = tile["weight"]
-        if current and (acc + w > PAGE_TARGET * 1.2 or len(current) >= MAX_TILES_PAGE):
-            pages.append(current)
-            current, acc = [], 0.0
-        current.append(tile)
-        acc += w
-        if acc >= PAGE_TARGET and len(current) >= 2:
-            pages.append(current)
-            current, acc = [], 0.0
-    if current:
-        pages.append(current)
+        i = min(range(n_cols), key=lambda j: col_h[j])
+        col_h[i] += natural_tile_height(tile, col_w) + TILE_GAP
+    return max(col_h)
+
+
+def group_into_pages(tiles: list) -> list[list]:
+    """Add tiles one-by-one; start a new page when simulated column height overflows."""
+    avail_h  = PAGE_H - 2*PAGE_MARGIN
+    target_h = avail_h * PAGE_TARGET
+    pages, cur = [], []
+    for tile in tiles:
+        test = cur + [tile]
+        if len(cur) >= 2 and _page_max_col_h(test) > target_h:
+            pages.append(cur)
+            cur = [tile]
+        else:
+            cur = test
+        if len(cur) >= MAX_TILES_PAGE:
+            pages.append(cur)
+            cur = []
+    if cur:
+        pages.append(cur)
     return pages
 
 
 def _page_fill_score(tiles: list) -> float:
-    """Estimate page fill quality: average column fill, weighted toward the weakest.
-
-    Using pure minimum fill stalls when all columns are balanced (adding one tile
-    raises one column but leaves others equal, so minimum never improves).
-    Using a blend of average + minimum avoids that deadlock.
-    """
+    """Estimate page fill quality: blend of average and worst column fill ratio."""
     if not tiles:
         return 0.0
     n_cols  = 3 if len(tiles) >= 6 else 2
@@ -217,25 +240,15 @@ def _page_fill_score(tiles: list) -> float:
             continue
         n_gaps    = max(0, len(col_tiles) - 1)
         col_avail = avail_h - n_gaps * TILE_GAP
-        text_nat  = sum(nh for t, nh in col_tiles if not t["photo"])
-        photo_nat = sum(nh for t, nh in col_tiles if     t["photo"])
-        if photo_nat > 0:
-            fills.append(1.0)  # photo columns always render full; exclude from gap detection
-        else:
-            fills.append(text_nat / col_avail)  # text columns: actual fill ratio
-    # Focus on text-only column fill — that's where blank space lives.
-    # Photo columns are always full (photo absorbs remaining height).
-    text_fills = [f for col, f in zip(cols, fills)
-                  if not any(t["photo"] for t, _ in col)]
-    if not text_fills:
-        return 1.0  # page has only photo columns — nothing to fill
-    avg   = sum(text_fills) / len(text_fills)
-    worst = min(text_fills)
+        col_nat   = sum(nh for _, nh in col_tiles)
+        fills.append(min(1.0, col_nat / col_avail))
+    avg   = sum(fills) / len(fills)
+    worst = min(fills)
     return 0.6 * avg + 0.4 * worst
 
 
-def _text_col_gaps(tiles: list) -> list[float]:
-    """Return the blank-space gap (in inches) at the bottom of each text-only column."""
+def _col_gaps(tiles: list) -> list[float]:
+    """Return the blank-space gap at the bottom of each column using render n_cols."""
     if not tiles:
         return []
     n_cols  = 3 if len(tiles) >= 6 else 2
@@ -244,27 +257,25 @@ def _text_col_gaps(tiles: list) -> list[float]:
     avail_h = PAGE_H - 2*PAGE_MARGIN
     gaps = []
     for col_tiles in cols:
-        if not col_tiles or any(t["photo"] for t, _ in col_tiles):
-            continue
-        n_g      = max(0, len(col_tiles) - 1)
-        text_nat = sum(nh for _, nh in col_tiles)
-        gaps.append(max(0.0, avail_h - n_g * TILE_GAP - text_nat))
+        n_g     = max(0, len(col_tiles) - 1)
+        col_nat = sum(nh for _, nh in col_tiles)
+        gaps.append(max(0.0, avail_h - n_g * TILE_GAP - col_nat))
     return gaps
 
 
 def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     """Try to borrow tiles from pages[donor_idx] into pages[i].
 
-    Simulates every single tile and every pair from the donor, picks the move
-    that most reduces the maximum text-col gap on page i. Returns True if a
-    borrow was made.
+    Uses per-column average gap as the comparison metric so the comparison
+    stays valid across the 2-col→3-col boundary (n_cols changes at 3 tiles).
+    Picks the single tile or pair that most reduces the per-column average gap.
     """
     MIN_DONOR_TILES = 2
 
-    curr_gaps = _text_col_gaps(pages[i])
+    curr_gaps = _col_gaps(pages[i])
     if not curr_gaps or max(curr_gaps) < min_gap:
         return False
-    curr_max = max(curr_gaps)
+    curr_avg = sum(curr_gaps) / len(curr_gaps)
 
     if donor_idx >= len(pages):
         return False
@@ -272,28 +283,35 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     if len(donor_list) <= MIN_DONOR_TILES:
         return False
 
+    avail_h   = PAGE_H - 2*PAGE_MARGIN
+    max_col_h = avail_h * 1.03   # allow 3% overflow so stacked portrait photos fill page
+
     # ── Try every single tile ────────────────────────────────────────────
     best_j       = -1
-    best_new_max = curr_max
+    best_new_avg = curr_avg
     for j, donor in enumerate(donor_list):
-        trial      = pages[i] + [donor]
-        trial_gaps = _text_col_gaps(trial)
-        new_max    = max(trial_gaps) if trial_gaps else 0.0
-        if new_max < best_new_max:
-            best_new_max = new_max
+        trial = pages[i] + [donor]
+        if _page_max_col_h(trial) > max_col_h:   # overflow guard
+            continue
+        trial_gaps = _col_gaps(trial)
+        new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
+        if new_avg < best_new_avg:
+            best_new_avg = new_avg
             best_j       = j
 
     # ── Try every pair ────────────────────────────────────────────────────
     best_pair     = (-1, -1)
-    best_pair_max = best_new_max
+    best_pair_avg = best_new_avg
     if len(pages[i]) + 2 <= MAX_TILES_PAGE:
         for j1 in range(len(donor_list)):
             for j2 in range(j1 + 1, len(donor_list)):
-                trial      = pages[i] + [donor_list[j1], donor_list[j2]]
-                trial_gaps = _text_col_gaps(trial)
-                new_max    = max(trial_gaps) if trial_gaps else 0.0
-                if new_max < best_pair_max:
-                    best_pair_max = new_max
+                trial = pages[i] + [donor_list[j1], donor_list[j2]]
+                if _page_max_col_h(trial) > max_col_h:   # overflow guard
+                    continue
+                trial_gaps = _col_gaps(trial)
+                new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
+                if new_avg < best_pair_avg:
+                    best_pair_avg = new_avg
                     best_pair     = (j1, j2)
 
     if best_pair != (-1, -1):
@@ -307,27 +325,52 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     return False
 
 
+def _consolidate(pages: list) -> list:
+    """Merge adjacent pages that physically fit together (3% tolerance for portrait stacking)."""
+    avail_h   = PAGE_H - 2*PAGE_MARGIN
+    max_col_h = avail_h * 1.03
+    changed = True
+    while changed:
+        changed = False
+        result  = []
+        i = 0
+        while i < len(pages):
+            if (i + 1 < len(pages) and
+                    _page_max_col_h(pages[i] + pages[i+1]) <= max_col_h):
+                result.append(pages[i] + pages[i+1])
+                i += 2
+                changed = True
+            else:
+                result.append(pages[i])
+                i += 1
+        pages = result
+    return pages
+
+
 def refill_pages(pages: list) -> list:
-    """Multi-pass borrow: repeat forward passes until no more improvement.
+    """Multi-pass borrow + consolidate sparse pages (3 outer cycles)."""
+    MIN_GAP       = 0.20
+    MAX_LOOKAHEAD = 8
 
-    Each pass scans all pages and tries to borrow from the next page (and the
-    page after that when the immediate neighbor doesn't help). Repeats until a
-    full pass produces zero borrows.
-    """
-    MIN_GAP = 0.20
+    for _outer in range(3):
+        # Borrow pass
+        for _pass in range(8):
+            made_borrow = False
+            for i in range(len(pages) - 1):
+                while len(pages[i]) < MAX_TILES_PAGE:
+                    borrowed = False
+                    for ahead in range(1, min(MAX_LOOKAHEAD + 1, len(pages) - i)):
+                        if _try_borrow(pages, i, i + ahead, MIN_GAP):
+                            borrowed    = True
+                            made_borrow = True
+                            break
+                    if not borrowed:
+                        break
+            if not made_borrow:
+                break
 
-    for _pass in range(6):   # safety cap; typically converges in 2–3
-        made_borrow = False
-        for i in range(len(pages) - 1):
-            while len(pages[i]) < MAX_TILES_PAGE:
-                if _try_borrow(pages, i, i + 1, MIN_GAP):
-                    made_borrow = True
-                elif i + 2 < len(pages) and _try_borrow(pages, i, i + 2, MIN_GAP):
-                    made_borrow = True
-                else:
-                    break
-        if not made_borrow:
-            break
+        # Consolidation: merge sparse adjacent pages left by cascade
+        pages = _consolidate(pages)
 
     return [p for p in pages if p]
 
@@ -529,42 +572,30 @@ def render_tile(tile) -> str:
 def natural_tile_height(tile: dict, col_w: float) -> float:
     """Estimate content-driven height for a tile at the given column width."""
     photo = tile["photo"]
-    wc    = min(tile["wc"], MAX_WORDS)   # display truncates at MAX_WORDS; don't overestimate
+    wc    = min(tile["wc"], MAX_WORDS)
     wpl   = max(3, col_w / WPL_COL)
     text_lines = math.ceil(max(1, wc) / wpl)
     text_h = text_lines * TILE_LINE_H + TILE_HEADER_H + TILE_PAD_H
     if not photo:
         return min(MAX_TILE_NAT_H, max(text_h, MIN_DIM))
-    photo_h = max(col_w * 0.90, MIN_DIM)   # square-ish photo
+    # Use real image aspect ratio: width/height → photo_h = col_w / ar
+    ar = tile.get("aspect_ratio", 1.0)
+    photo_h = max(col_w / ar, MIN_DIM)
     return min(MAX_TILE_NAT_H, photo_h + text_h)
 
 
 def assign_to_cols(tiles: list, n_cols: int, col_w: float) -> list:
-    """Greedy shortest-column assignment, photos first.
-
-    After placing a photo tile, we set that column's accumulated height to
-    PAGE_H (a sentinel) so the greedy heuristic treats it as full. This
-    prevents text tiles from piling into photo columns where they would be
-    silently absorbed by photo scaling and never improve fill scores.
-    Text tiles then fill the remaining columns, making the page fill visible
-    to the refill algorithm.
-    """
+    """Greedy shortest-column assignment. Tiles at natural height; no stretching."""
     cols  = [[] for _ in range(n_cols)]
     col_h = [0.0] * n_cols
-    ordered = [t for t in tiles if t["photo"]] + [t for t in tiles if not t["photo"]]
     avail_h = PAGE_H - 2 * PAGE_MARGIN
-    for tile in ordered:
+    for tile in tiles:
         i = min(range(n_cols), key=lambda j: col_h[j])
         nat_h = natural_tile_height(tile, col_w)
         cols[i].append((tile, nat_h))
-        if tile["photo"]:
-            # Sentinel: photo column appears full so text tiles prefer text-only cols.
-            col_h[i] = PAGE_H * 10
-        else:
-            col_h[i] += nat_h
-            # If a text-only column would overflow, redirect subsequent tiles elsewhere.
-            if col_h[i] >= avail_h * 0.92:
-                col_h[i] = PAGE_H * 10
+        col_h[i] += nat_h
+        if col_h[i] >= avail_h * 0.95:
+            col_h[i] = PAGE_H * 10   # column is full — redirect remaining tiles
     return cols
 
 
@@ -615,7 +646,7 @@ def year_opener_page(year, records, map_b64, conn):
 
 
 def render_content_page(page_tiles: list) -> str:
-    """Flexbox column layout: text tiles shrink to content, photo tiles grow to fill."""
+    """Flexbox column layout: tiles at natural height, 3 cols for 6+ tiles."""
     n_cols = 3 if len(page_tiles) >= 6 else 2
     col_w  = (PAGE_W - 2*PAGE_MARGIN - (n_cols - 1)*TILE_GAP) / n_cols
     cols   = assign_to_cols(page_tiles, n_cols, col_w)
@@ -689,13 +720,13 @@ body { font-family: Georgia, "Times New Roman", serif; background: #888; }
   break-inside: avoid; page-break-inside: avoid;
 }
 
-/* Portrait: image drives its own height (natural aspect ratio), caption below */
-.tile-portrait                   { flex: 0 0 auto;
+/* Portrait: tile at natural height; photo at natural aspect ratio; no gray space */
+.tile-portrait                   { flex: 0 0 auto; min-height: 1.5in;
                                    display: flex; flex-direction: column; }
 .tile-portrait .tile-photo-top   { flex: 0 0 auto; }
 .tile-portrait .tile-caption     { flex: 0 0 auto; padding: 0.05in 0.07in; }
 
-/* Landscape: photo left, text vertically centered on right */
+/* Landscape: photo left at natural height; text fills remaining width */
 .tile-landscape                  { flex: 0 0 auto; min-height: 1.5in;
                                    display: flex; flex-direction: row; }
 .tile-landscape .tile-photo-left { flex: 0 0 38%; }
