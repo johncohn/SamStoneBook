@@ -129,10 +129,9 @@ def intro_page(conn, map_b64):
                 f'<span class="intro-stat-label">{esc(label)}</span>'
                 f'</div>')
 
-    stats = (stat(total,       "SamStones") +
-             stat(placed,      "Placed") +
+    stats = (stat(stones_sent, "SamStones Sent") +
+             stat(placed,      "SamStones Reported") +
              stat(found,       "Found") +
-             stat(stones_sent, "Stones Requested") +
              stat(countries_n, "Countries"))
 
     countries_html = ""
