@@ -570,9 +570,37 @@ def assign_to_cols(tiles: list, n_cols: int, col_w: float) -> list:
 
 # ── PAGE BUILDERS ─────────────────────────────────────────────────────────────
 
-def year_opener_page(year, records, map_b64):
+def year_opener_page(year, records, map_b64, conn):
     placed = sum(1 for r in records if r["category"] and "Placed" in r["category"])
     found  = sum(1 for r in records if r["category"] and "Found"  in r["category"])
+
+    # Request stats from the requests table (if it exists)
+    req_html = ""
+    try:
+        req_row = conn.execute(
+            "SELECT COUNT(*), SUM(COALESCE(stones,0)) FROM requests WHERE year=? AND is_spam=0",
+            (year,)
+        ).fetchone()
+        req_count, stones_sent = req_row if req_row else (0, 0)
+        req_countries = sorted({row[0] for row in conn.execute(
+            "SELECT DISTINCT country FROM requests WHERE year=? AND is_spam=0 AND country!=''",
+            (year,)
+        ) if row[0]})
+        if req_count:
+            stones_sent = stones_sent or 0
+            n_c = len(req_countries)
+            req_html = (f'<span class="sep">·</span>'
+                        f'<span class="requested">'
+                        f'{req_count} requests · {stones_sent} stones sent'
+                        f'{f" · {n_c} countries" if n_c else ""}'
+                        f'</span>')
+            if req_countries:
+                country_list = ", ".join(req_countries)
+                req_html += (f'<div class="req-countries">'
+                             f'Requests from: {country_list}</div>')
+    except Exception:
+        pass   # requests table may not exist
+
     return (f'<div class="page year-opener">'
             f'<div class="year-title">{year}</div>'
             f'<img class="year-map" src="data:image/png;base64,{map_b64}" alt="">'
@@ -582,6 +610,7 @@ def year_opener_page(year, records, map_b64):
             f'<span class="placed">{placed} placed</span>'
             f'<span class="sep">·</span>'
             f'<span class="found">{found} found</span>'
+            f'{req_html}'
             f'</div></div>')
 
 
@@ -646,8 +675,10 @@ body { font-family: Georgia, "Times New Roman", serif; background: #888; }
 .year-map   { width: 100%; border: 1px solid #ddd; border-radius: 3px; }
 .year-stats { font-size: 12pt; color: #666; }
 .sep    { margin: 0 0.1in; color: #ccc; }
-.placed { color: #27ae60; font-weight: bold; }
-.found  { color: #2980b9; font-weight: bold; }
+.placed        { color: #27ae60; font-weight: bold; }
+.found         { color: #2980b9; font-weight: bold; }
+.requested     { color: #8e44ad; font-weight: bold; }
+.req-countries { font-size: 9pt; color: #8e44ad; font-style: italic; margin-top: 0.05in; }
 
 /* ── All tiles ── */
 .tile {
@@ -734,7 +765,7 @@ def main():
           f"avg {len(tiles)/len(pages):.1f}/page)")
 
     body = "\n".join([
-        year_opener_page(YEAR, records, map_b64),
+        year_opener_page(YEAR, records, map_b64, conn),
         "\n".join(render_content_page(pg) for pg in pages),
     ])
 
