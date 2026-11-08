@@ -2,6 +2,7 @@
 samstones.db
 cached_images/
 prototype_*.html
+samstones_master.html
 *.pdf
 
 # Python cache

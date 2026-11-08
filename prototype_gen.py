@@ -689,16 +689,16 @@ body { font-family: Georgia, "Times New Roman", serif; background: #888; }
   break-inside: avoid; page-break-inside: avoid;
 }
 
-/* Portrait: grows to fill remaining column space; photo fills tile, caption natural */
-.tile-portrait                   { flex: 1 1 0; min-height: 1.5in;
+/* Portrait: image drives its own height (natural aspect ratio), caption below */
+.tile-portrait                   { flex: 0 0 auto;
                                    display: flex; flex-direction: column; }
-.tile-portrait .tile-photo-top   { flex: 1 1 0; min-height: 0; overflow: hidden; }
+.tile-portrait .tile-photo-top   { flex: 0 0 auto; }
 .tile-portrait .tile-caption     { flex: 0 0 auto; padding: 0.05in 0.07in; }
 
 /* Landscape: photo left, text vertically centered on right */
-.tile-landscape                  { flex: 1 1 0; min-height: 1.5in;
+.tile-landscape                  { flex: 0 0 auto; min-height: 1.5in;
                                    display: flex; flex-direction: row; }
-.tile-landscape .tile-photo-left { flex: 0 0 38%; overflow: hidden; }
+.tile-landscape .tile-photo-left { flex: 0 0 38%; }
 .tile-landscape .tile-content    { flex: 1; padding: 0.07in 0.08in; overflow: hidden;
                                    display: flex; flex-direction: column;
                                    justify-content: center; }
@@ -706,8 +706,8 @@ body { font-family: Georgia, "Times New Roman", serif; background: #888; }
 /* Text-only: shrinks to exact content height — no white space padding */
 .tile-text-only { flex: 0 0 auto; padding: 0.08in 0.10in; background: #f9f8f6; }
 
-/* Cover photo */
-.tile-img { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* Cover photo — natural aspect ratio, no cropping, no empty space */
+.tile-img { width: 100%; height: auto; display: block; }
 
 /* Typography */
 .tile-loc  { font-size: 9pt; font-weight: bold; color: #1a252f; line-height: 1.25; }
