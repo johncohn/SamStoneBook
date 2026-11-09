@@ -613,7 +613,9 @@ def measure_tile_heights(tiles: list) -> None:
     CACHE_PATH  = os.path.join(_HERE_LOCAL, ".tile_heights_cache.json")
     PW_DIR_MH   = "/private/tmp/pw_pdf"
     MH_SCRIPT   = os.path.join(PW_DIR_MH, "measure_tiles.mjs")
-    HTML_TMP    = "/tmp/samstones_measure.html"
+    # HTML must live inside _HERE_LOCAL so the HTTP server in measure_tiles.mjs
+    # can serve it along with the cached_images/ directory.
+    HTML_TMP    = os.path.join(_HERE_LOCAL, "samstones_measure.html")
     JSON_TMP    = "/tmp/samstones_heights.json"
 
     def _tile_hash(tile: dict) -> str:
@@ -660,11 +662,10 @@ def measure_tile_heights(tiles: list) -> None:
         with open(HTML_TMP, "w") as f:
             f.write(full_html)
 
-        base_url = f"file://{_HERE_LOCAL}/"
         result = subprocess.run(
             ["node", MH_SCRIPT,
              "--html", HTML_TMP,
-             "--base", base_url,
+             "--dir",  _HERE_LOCAL,
              "--out",  JSON_TMP],
             cwd=PW_DIR_MH, timeout=180,
             capture_output=True, text=True,
