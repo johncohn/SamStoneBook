@@ -193,15 +193,24 @@ def build_tiles(records: list) -> list:
 # ── PAGE GROUPING ─────────────────────────────────────────────────────────────
 
 def _page_max_col_h(tiles: list) -> float:
-    """Simulate greedy column assignment; return the tallest column's height."""
+    """Simulate greedy column assignment; return the tallest column's height.
+
+    Matches the CSS flex gap model: (n_tiles - 1) gaps per column, not n_tiles.
+    """
     if not tiles:
         return 0.0
-    n_cols = 3 if len(tiles) >= 6 else 2
-    col_w  = (PAGE_W - 2*PAGE_MARGIN - (n_cols-1)*TILE_GAP) / n_cols
-    col_h  = [0.0] * n_cols
+    n_cols  = 3 if len(tiles) >= 6 else 2
+    col_w   = (PAGE_W - 2*PAGE_MARGIN - (n_cols-1)*TILE_GAP) / n_cols
+    col_h   = [0.0] * n_cols
+    col_n   = [0]   * n_cols   # tile count per column
     for tile in tiles:
         i = min(range(n_cols), key=lambda j: col_h[j])
         col_h[i] += natural_tile_height(tile, col_w) + TILE_GAP
+        col_n[i] += 1
+    # CSS gap is between tiles only — subtract the extra trailing gap per column
+    for i in range(n_cols):
+        if col_n[i] > 0:
+            col_h[i] -= TILE_GAP
     return max(col_h)
 
 
@@ -291,7 +300,11 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     best_new_avg = curr_avg
     for j, donor in enumerate(donor_list):
         trial = pages[i] + [donor]
-        if _page_max_col_h(trial) > max_col_h:   # overflow guard
+        if _page_max_col_h(trial) > max_col_h:   # receiver overflow guard
+            continue
+        # Donor health: removing this tile must not leave donor overflowing
+        donor_after = donor_list[:j] + donor_list[j+1:]
+        if donor_after and _page_max_col_h(donor_after) > max_col_h:
             continue
         trial_gaps = _col_gaps(trial)
         new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
@@ -306,7 +319,11 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
         for j1 in range(len(donor_list)):
             for j2 in range(j1 + 1, len(donor_list)):
                 trial = pages[i] + [donor_list[j1], donor_list[j2]]
-                if _page_max_col_h(trial) > max_col_h:   # overflow guard
+                if _page_max_col_h(trial) > max_col_h:   # receiver overflow guard
+                    continue
+                # Donor health: removing both tiles must not leave donor overflowing
+                donor_after = [t for k, t in enumerate(donor_list) if k != j1 and k != j2]
+                if donor_after and _page_max_col_h(donor_after) > max_col_h:
                     continue
                 trial_gaps = _col_gaps(trial)
                 new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
@@ -316,8 +333,12 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
 
     if best_pair != (-1, -1):
         j1, j2 = best_pair
-        pages[i].append(donor_list.pop(j2))
-        pages[i].append(donor_list.pop(j1))
+        # Pop j1 first (lower index), then j2-1 (shifted after j1 removed),
+        # so the appended order matches the trial [j1, j2] that passed the overflow check.
+        tile_j1 = donor_list.pop(j1)
+        tile_j2 = donor_list.pop(j2 - 1)
+        pages[i].append(tile_j1)
+        pages[i].append(tile_j2)
         return True
     elif best_j >= 0:
         pages[i].append(donor_list.pop(best_j))
@@ -838,10 +859,11 @@ body { font-family: Georgia, "Times New Roman", serif; background: #888; }
   break-inside: avoid; page-break-inside: avoid;
 }
 
-/* Portrait: tile at natural height; photo at natural aspect ratio; no gray space */
+/* Portrait: tile at natural height; photo capped at 3.0in to prevent very tall
+   portrait photos from dominating a column and leaving other columns sparse. */
 .tile-portrait                   { flex: 0 0 auto; min-height: 1.5in;
                                    display: flex; flex-direction: column; }
-.tile-portrait .tile-photo-top   { flex: 0 0 auto; }
+.tile-portrait .tile-photo-top   { flex: 0 0 auto; max-height: 3.0in; overflow: hidden; }
 .tile-portrait .tile-caption     { flex: 0 0 auto; padding: 0.05in 0.07in; }
 
 /* Landscape: photo left at natural height; text fills remaining width */
