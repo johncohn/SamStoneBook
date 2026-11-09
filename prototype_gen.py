@@ -292,19 +292,22 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     if len(donor_list) <= MIN_DONOR_TILES:
         return False
 
-    avail_h   = PAGE_H - 2*PAGE_MARGIN
-    max_col_h = avail_h * 1.03   # allow 3% overflow so stacked portrait photos fill page
+    avail_h      = PAGE_H - 2*PAGE_MARGIN   # 9.6" — the visible column height
+    max_recv_h   = avail_h                  # receiver must not overflow visible area
+    # Donor can reach PAGE_H (9.8") — the full CSS column box height — which is slightly
+    # taller than the visible clip (9.6491"), so donors with sim 9.6–9.8" won't clip.
+    max_donor_h  = PAGE_H
 
     # ── Try every single tile ────────────────────────────────────────────
     best_j       = -1
     best_new_avg = curr_avg
     for j, donor in enumerate(donor_list):
         trial = pages[i] + [donor]
-        if _page_max_col_h(trial) > max_col_h:   # receiver overflow guard
+        if _page_max_col_h(trial) > max_recv_h:   # receiver overflow guard
             continue
-        # Donor health: removing this tile must not leave donor overflowing
+        # Donor health: removing this tile must not leave donor clipping
         donor_after = donor_list[:j] + donor_list[j+1:]
-        if donor_after and _page_max_col_h(donor_after) > max_col_h:
+        if donor_after and _page_max_col_h(donor_after) > max_donor_h:
             continue
         trial_gaps = _col_gaps(trial)
         new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
@@ -319,11 +322,11 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
         for j1 in range(len(donor_list)):
             for j2 in range(j1 + 1, len(donor_list)):
                 trial = pages[i] + [donor_list[j1], donor_list[j2]]
-                if _page_max_col_h(trial) > max_col_h:   # receiver overflow guard
+                if _page_max_col_h(trial) > max_recv_h:   # receiver overflow guard
                     continue
-                # Donor health: removing both tiles must not leave donor overflowing
+                # Donor health: removing both tiles must not leave donor clipping
                 donor_after = [t for k, t in enumerate(donor_list) if k != j1 and k != j2]
-                if donor_after and _page_max_col_h(donor_after) > max_col_h:
+                if donor_after and _page_max_col_h(donor_after) > max_donor_h:
                     continue
                 trial_gaps = _col_gaps(trial)
                 new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
@@ -347,9 +350,9 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
 
 
 def _consolidate(pages: list) -> list:
-    """Merge adjacent pages that physically fit together (3% tolerance for portrait stacking)."""
-    avail_h   = PAGE_H - 2*PAGE_MARGIN
-    max_col_h = avail_h * 1.03
+    """Merge adjacent pages that physically fit together without overflowing the visible column."""
+    avail_h   = PAGE_H - 2*PAGE_MARGIN   # 9.6" visible column height
+    max_col_h = avail_h
     changed = True
     while changed:
         changed = False
