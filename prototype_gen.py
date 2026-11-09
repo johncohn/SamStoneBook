@@ -374,7 +374,7 @@ def _consolidate(pages: list) -> list:
 def refill_pages(pages: list) -> list:
     """Multi-pass borrow + consolidate sparse pages (3 outer cycles)."""
     MIN_GAP       = 0.20
-    MAX_LOOKAHEAD = 8
+    MAX_LOOKAHEAD = 20
 
     for _outer in range(3):
         # Borrow pass
