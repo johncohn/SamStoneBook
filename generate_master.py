@@ -290,8 +290,32 @@ def main():
             capture_output=True, text=True,
         )
         if result.returncode == 0 and os.path.exists(OUT_PDF):
-            pdf_sz = os.path.getsize(OUT_PDF) / 1_000_000
-            print(f"PDF written → {OUT_PDF}  ({pdf_sz:.1f} MB)")
+            raw_sz = os.path.getsize(OUT_PDF) / 1_000_000
+            print(f"PDF written → {OUT_PDF}  ({raw_sz:.1f} MB, uncompressed)")
+
+            # Compress with Ghostscript: downsample images to 300 DPI (print quality).
+            # Chromium embeds photos at native resolution (some 20-30 MP); gs reduces
+            # them to the resolution actually needed for 300 DPI print output.
+            OUT_PDF_PRINT = OUT_PDF.replace(".pdf", "_print.pdf")
+            OUT_PDF_WEB   = OUT_PDF.replace(".pdf", "_web.pdf")
+            gs_base = ["gs", "-dNOPAUSE", "-dBATCH", "-sDEVICE=pdfwrite",
+                       "-dCompatibilityLevel=1.4"]
+            for label, path_out, extra in [
+                ("print (300 DPI)", OUT_PDF_PRINT,
+                 ["-dPDFSETTINGS=/printer",
+                  "-dColorImageResolution=300", "-dGrayImageResolution=300"]),
+                ("web (150 DPI)",   OUT_PDF_WEB,
+                 ["-dPDFSETTINGS=/ebook"]),
+            ]:
+                r = subprocess.run(
+                    gs_base + extra + [f"-sOutputFile={path_out}", OUT_PDF],
+                    capture_output=True, text=True, timeout=600,
+                )
+                if r.returncode == 0:
+                    sz = os.path.getsize(path_out) / 1_000_000
+                    print(f"  → {label}: {path_out}  ({sz:.1f} MB)")
+                else:
+                    print(f"  gs {label} failed: {r.stderr[-200:]}")
         else:
             print(f"PDF generation failed (exit {result.returncode}):")
             print(result.stdout[-500:])

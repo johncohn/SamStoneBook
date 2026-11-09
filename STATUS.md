@@ -8,7 +8,9 @@ Collects all 1,681 SamStone placements/findings from samstones.org (2007–2026)
 | Output | Size | Pages |
 |--------|------|-------|
 | `samstones_master.html` | 1.3 MB | 189 (1 intro + 188 content) |
-| `samstones_master.pdf` | ~1.2 GB | 189 |
+| `samstones_master.pdf` | ~1.2 GB | 189 — raw Chromium output (uncompressed) |
+| `samstones_master_print.pdf` | ~97 MB | 189 — Ghostscript 300 DPI (upload to POD) |
+| `samstones_master_web.pdf` | ~27 MB | 189 — Ghostscript 150 DPI (screen/sharing) |
 
 Page counts by year (content pages only):
 

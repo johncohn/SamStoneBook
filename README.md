@@ -61,9 +61,15 @@ python3 scraper.py
 
 ```bash
 python3 generate_master.py
-# → samstones_master.html  (1.3 MB)
-# → samstones_master.pdf   (~1 GB — full res photos)
+# → samstones_master.html        (1.3 MB)
+# → samstones_master.pdf         (~1.2 GB — raw Chromium embed, all photos at native res)
+# → samstones_master_print.pdf   (~97 MB  — Ghostscript 300 DPI, upload to print-on-demand)
+# → samstones_master_web.pdf     (~27 MB  — Ghostscript 150 DPI, screen / sharing)
 ```
+
+The raw PDF is large because Chromium embeds photos at their original file resolution
+(some are 20–30 MP). Ghostscript downsamples to the resolution actually needed for
+300 DPI print (1085 px per 3.6" column). The compressed PDFs are generated automatically.
 
 The generator:
 1. Builds all tiles across all 20 years
