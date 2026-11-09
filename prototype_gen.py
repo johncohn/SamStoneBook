@@ -196,6 +196,8 @@ def _page_max_col_h(tiles: list) -> float:
     """Simulate greedy column assignment; return the tallest column's height.
 
     Matches the CSS flex gap model: (n_tiles - 1) gaps per column, not n_tiles.
+    Tiles are sorted by height descending before assignment so the simulation
+    matches assign_to_cols (which uses the same sort) and minimises max col height.
     """
     if not tiles:
         return 0.0
@@ -203,7 +205,7 @@ def _page_max_col_h(tiles: list) -> float:
     col_w   = (PAGE_W - 2*PAGE_MARGIN - (n_cols-1)*TILE_GAP) / n_cols
     col_h   = [0.0] * n_cols
     col_n   = [0]   * n_cols   # tile count per column
-    for tile in tiles:
+    for tile in sorted(tiles, key=lambda t: natural_tile_height(t, col_w), reverse=True):
         i = min(range(n_cols), key=lambda j: col_h[j])
         col_h[i] += natural_tile_height(tile, col_w) + TILE_GAP
         col_n[i] += 1
@@ -275,16 +277,18 @@ def _col_gaps(tiles: list) -> list[float]:
 def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     """Try to borrow tiles from pages[donor_idx] into pages[i].
 
-    Uses per-column average gap as the comparison metric so the comparison
-    stays valid across the 2-col→3-col boundary (n_cols changes at 3 tiles).
-    Picks the single tile or pair that most reduces the per-column average gap.
+    Uses per-column average gap as the comparison metric; also accepts a borrow
+    if it reduces the max gap (handles 2-col→3-col transitions gracefully).
+    MIN_DONOR_TILES=1 allows borrowing from 2-tile pages (leaving 1 tile for
+    _consolidate to merge later).
     """
-    MIN_DONOR_TILES = 2
+    MIN_DONOR_TILES = 1
 
     curr_gaps = _col_gaps(pages[i])
     if not curr_gaps or max(curr_gaps) < min_gap:
         return False
     curr_avg = sum(curr_gaps) / len(curr_gaps)
+    curr_max = max(curr_gaps)
 
     if donor_idx >= len(pages):
         return False
@@ -299,8 +303,9 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
     max_donor_h  = PAGE_H
 
     # ── Try every single tile ────────────────────────────────────────────
-    best_j       = -1
-    best_new_avg = curr_avg
+    best_j        = -1
+    best_new_avg  = curr_avg
+    best_new_max  = curr_max
     for j, donor in enumerate(donor_list):
         trial = pages[i] + [donor]
         if _page_max_col_h(trial) > max_recv_h:   # receiver overflow guard
@@ -311,13 +316,17 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
             continue
         trial_gaps = _col_gaps(trial)
         new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
-        if new_avg < best_new_avg:
+        new_max    = max(trial_gaps) if trial_gaps else 0.0
+        # Accept if avg improves OR (avg same/close but max improves)
+        if new_avg < best_new_avg or (new_avg <= best_new_avg + 0.01 and new_max < best_new_max):
             best_new_avg = new_avg
+            best_new_max = new_max
             best_j       = j
 
     # ── Try every pair ────────────────────────────────────────────────────
     best_pair     = (-1, -1)
     best_pair_avg = best_new_avg
+    best_pair_max = best_new_max
     if len(pages[i]) + 2 <= MAX_TILES_PAGE:
         for j1 in range(len(donor_list)):
             for j2 in range(j1 + 1, len(donor_list)):
@@ -330,8 +339,10 @@ def _try_borrow(pages: list, i: int, donor_idx: int, min_gap: float) -> bool:
                     continue
                 trial_gaps = _col_gaps(trial)
                 new_avg    = sum(trial_gaps) / len(trial_gaps) if trial_gaps else 0.0
-                if new_avg < best_pair_avg:
+                new_max    = max(trial_gaps) if trial_gaps else 0.0
+                if new_avg < best_pair_avg or (new_avg <= best_pair_avg + 0.01 and new_max < best_pair_max):
                     best_pair_avg = new_avg
+                    best_pair_max = new_max
                     best_pair     = (j1, j2)
 
     if best_pair != (-1, -1):
@@ -727,11 +738,11 @@ def measure_tile_heights(tiles: list) -> None:
 
 
 def assign_to_cols(tiles: list, n_cols: int, col_w: float) -> list:
-    """Greedy shortest-column assignment. Tiles at natural height; no stretching."""
+    """Greedy shortest-column assignment. Tiles sorted by height DESC for best balance."""
     cols  = [[] for _ in range(n_cols)]
     col_h = [0.0] * n_cols
     avail_h = PAGE_H - 2 * PAGE_MARGIN
-    for tile in tiles:
+    for tile in sorted(tiles, key=lambda t: natural_tile_height(t, col_w), reverse=True):
         i = min(range(n_cols), key=lambda j: col_h[j])
         nat_h = natural_tile_height(tile, col_w)
         cols[i].append((tile, nat_h))

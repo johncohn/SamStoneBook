@@ -98,9 +98,13 @@ Each entry resolves to a tile dict with: best photo path (prefers URLs containin
 
 ### Height measurement (key step)
 
-Before packing, all tiles are rendered at both column widths (2-col: 3.615 in, 3-col: 2.387 in) in a hidden off-screen Playwright page. `getBoundingClientRect().height` is recorded for each tile. These exact browser heights replace estimation-based guesses — this is what makes packing accurate.
+Before packing, all tiles are rendered at both column widths (2-col: 3.615 in, 3-col: 2.387 in) in a hidden off-screen Playwright page served via HTTP (so images load correctly). `getBoundingClientRect().height` is recorded for each tile. These exact browser heights replace estimation-based guesses — this is what makes packing accurate.
 
 Measurements are cached in `.tile_heights_cache.json` (keyed by tile HTML hash), so only new or changed tiles need re-measurement on subsequent runs.
+
+### Column assignment sort
+
+Both simulation (`_page_max_col_h`) and rendering (`assign_to_cols`) sort tiles by height descending before greedy shortest-column assignment. This achieves much better column balance — without sorting, the same 9-tile set that sorts into three balanced 9.30" columns can instead greedy-assign into a lopsided 10.68" column, falsely blocking consolidations.
 
 ### Page grouping
 
@@ -110,8 +114,8 @@ Tiles are added one-by-one using greedy shortest-column assignment. A page close
 
 After initial grouping, `refill_pages()` runs 3 outer cycles of:
 
-1. **Borrow pass** (up to 8 passes, up to 8 pages lookahead): for each sparse page, tries borrowing single tiles and pairs from later pages. Picks the borrow that most reduces the per-column average gap. Respects a 3% overflow tolerance to allow portrait photos to stack.
-2. **Consolidation**: merges adjacent pages whose combined tiles fit within one page (3% tolerance). Eliminates the cascade of 1–2 tile pages left by borrowing.
+1. **Borrow pass** (up to 8 passes, up to 20 pages lookahead): for each sparse page (max column gap > 0.20"), tries borrowing single tiles and pairs from later pages. Picks the borrow that most reduces the per-column average gap, or reduces the max gap if average stays the same. Checks donor health: removing a tile must not leave the donor page overflowing `PAGE_H`. MIN_DONOR_TILES=1 so 2-tile donors can donate 1 tile.
+2. **Consolidation**: merges adjacent pages whose combined tiles fit within `avail_h = 9.6"`. Eliminates the cascade of 1–2 tile pages left by borrowing.
 
 ### CSS layout
 
