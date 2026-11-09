@@ -40,7 +40,7 @@ MASTER_CSS = CSS + """
   letter-spacing: -1px; line-height: 1; text-align: center;
 }
 .intro-subtitle {
-  font-size: 16pt; color: #999; letter-spacing: 2px;
+  font-size: 16pt; color: #555; letter-spacing: 2px;
   font-style: italic;
 }
 .intro-map { width: 100%; border: 1px solid #ddd; border-radius: 3px; }
@@ -50,14 +50,14 @@ MASTER_CSS = CSS + """
 }
 .intro-stat { display: flex; flex-direction: column; align-items: center; gap: 2px; }
 .intro-stat-num   { font-size: 24pt; font-weight: bold; color: #1a252f; line-height: 1; }
-.intro-stat-label { font-size: 7.5pt; color: #aaa; text-transform: uppercase;
+.intro-stat-label { font-size: 7.5pt; color: #555; text-transform: uppercase;
                     letter-spacing: 0.8px; font-family: sans-serif; }
 .intro-countries {
-  font-size: 7.5pt; color: #999; text-align: center; line-height: 1.6;
+  font-size: 7.5pt; color: #555; text-align: center; line-height: 1.6;
   max-width: 6.5in; font-style: italic;
 }
 .intro-countries-label {
-  font-size: 7pt; color: #bbb; text-transform: uppercase;
+  font-size: 7pt; color: #777; text-transform: uppercase;
   letter-spacing: 0.8px; font-family: sans-serif; margin-bottom: 0.04in;
 }
 
